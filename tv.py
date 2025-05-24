@@ -1,120 +1,193 @@
-truthTable = []
-faultyTable = []
-
-def read():
-    archive = input('Digite o nome do arquivo do circuito: ')
+def read_expression():
     try:
-        with open(archive, 'r', encoding='utf-8') as file:
-            return file.read().strip()
-    except FileNotFoundError:
-        print('Arquivo não encontrado')
+        name = input("Digite o nome do arquivo do circuito: ")
+        with open(name, 'r', encoding='utf-8') as f:
+            content = f.read().strip()
+            if not content:
+                print("O arquivo está vazio!")
+                return None
+            return content
     except Exception as e:
-        print(f'Erro ao ler o arquivo: {e}')
+        print(f"Erro ao ler o arquivo: {e}")
+        return None
 
-def generate_truth_table(expression, defects=None):
+# Substituição dos operadores textuais por funções válidas
+def replace_operators(expr):
+    expr = expr.upper().replace("(", " ( ").replace(")", " ) ")
+    tokens = expr.split()
+
+    output = []
+
+    binary_ops = {"AND": "and_", "OR": "or_", "NAND": "nand", "NOR": "nor", "XOR": "xor", "XNOR": "xnor"}
+    unary_ops = {"NOT": "not_"}
+
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+
+        if token in unary_ops:
+            if i + 1 < len(tokens):
+                output.append(f"{unary_ops[token]}({tokens[i+1]})")
+                i += 2
+            else:
+                output.append(f"{unary_ops[token]}(0)")
+                i += 1
+
+        elif token in binary_ops:
+            if output and i + 1 < len(tokens):
+                b = tokens[i+1]
+                a = output.pop()
+                output.append(f"{binary_ops[token]}({a},{b})")
+                i += 2
+            else:
+                output.append("0")
+                i += 1
+
+        else:
+            output.append(token)
+            i += 1
+
+    return " ".join(output)
+
+# Funções equivalentes aos operadores lógicos
+def safe_eval(expr, context):
+    def and_(a, b): return int(a and b)
+    def or_(a, b): return int(a or b)
+    def not_(a): return int(not a)
+    def nand(a, b): return int(not (a and b))
+    def nor(a, b): return int(not (a or b))
+    def xor(a, b): return int(a != b)
+    def xnor(a, b): return int(a == b)
+
+    local_ctx = {
+        "and_": and_,
+        "or_": or_,
+        "not_": not_,
+        "nand": nand,
+        "nor": nor,
+        "xor": xor,
+        "xnor": xnor,
+        **context
+    }
+
+    try: 
+        compiled = compile(expr, '<string>', 'eval')
+        return eval(compiled, {}, local_ctx)
+    except Exception as e:
+        print(f"Erro ao avaliar a expressão: {e}")
+        return 0
+
+# Geração da tabela verdade
+def generate_table(expr, defects=None):
+    expr = replace_operators(expr)
+    vars = sorted(set(c for c in expr if c.isalpha() and c.isupper()))
     table = []
-    var = sorted(set([char for char in expression if char.isalpha() and char.isupper()]))
-    bits = 2 ** len(var)
 
-    for i in range(bits):
-        values = [(i >> bit) & 1 for bit in reversed(range(len(var)))]
-        context = dict(zip(var, values))
-        
+    for i in range(2 ** len(vars)):
+        values = [(i >> bit) & 1 for bit in reversed(range(len(vars)))]
+        context = dict(zip(vars, values))
         if defects:
-            for gate, value in defects.items():
-                if gate in context:
-                    context[gate] = value
+            context.update(defects)
 
         try:
-            result = int(bool(eval(expression, {}, context)))
+            result = safe_eval(expr, context)
         except Exception as e:
-            print(f'Erro ao avaliar: {e}')
+            print(f"Erro ao avaliar: {e}")
             result = 0
 
-        line = values + [result]
-        table.append(line)
-    
-    return var, table
+        table.append(values + [result])
 
-def print_table(variables, table, title):
+    return vars, table
+
+# Impressão da tabela
+def print_table(vars, table, title):
     print(f"\n{title}:")
-    print(" | ".join(variables + ["Saída"]))
-    print("-" * (8 * len(variables)))
-    for line in table:
-        print(" | ".join(str(v) for v in line))
+    print(" | ".join(vars + ["Saída"]))
+    print("-" * (6 * len(vars)))
+    for row in table:
+        print(" | ".join(map(str, row)))
 
-def find_defects(correct, faulty, variables, gates):
-    from itertools import combinations, product
+# Diagnóstico de defeitos
+def find_defects(expr, expected, faulty, vars):
+    possibilities = []
     
-    possible = []
-    max_defects = len(gates)
-    
-    for num in range(1, max_defects + 1):
-        for gates_combo in combinations(gates, num):
-            for values in product([0, 1], repeat=num):
-                defects = dict(zip(gates_combo, values))
-                _, test_table = generate_truth_table(expression, defects)
-                if test_table == faulty:
-                    possible.append(defects)
-    
-    return possible
-
-def main():
-    global expression
-    expression = read()
-    if not expression:
-        return
-
-    var, correct = generate_truth_table(expression)
-    print_table(var, correct, "Circuito")
-
-    while True:
-        defect_input = input("\nDefeitos (ex: A=1,B=0 ou Enter para todos): ").strip()
-        defects = {}
+    for var in vars:
+        defects = {var: 0}
+        _, test_table = generate_table(expr, defects)
+        if test_table == faulty:
+            possibilities.append(defects)
         
-        if not defect_input:
-            break
-            
-        try:
-            items = defect_input.split(',')
-            for item in items:
-                gate, value = item.split('=')
-                gate = gate.strip().upper()
-                defects[gate] = int(value.strip())
-            break
-        except:
-            print("Formato inválido. Use GATE=VALOR (ex: A=1)")
+        defects = {var: 1}
+        _, test_table = generate_table(expr, defects)
+        if test_table == faulty:
+            possibilities.append(defects)
+    
+    if not possibilities:
+        for i in range(len(vars)):
+            for j in range(i+1, len(vars)):
+                for val1 in [0, 1]:
+                    for val2 in [0, 1]:
+                        defects = {vars[i]: val1, vars[j]: val2}
+                        _, test_table = generate_table(expr, defects)
+                        if test_table == faulty:
+                            possibilities.append(defects)
+    
+    return possibilities
 
-    _, faulty = generate_truth_table(expression, defects if defects else None)
-    print_table(var, faulty, "Circuito Defeituoso")
-
-    gates = sorted(set([char for char in expression if char.isalpha() and char.isupper()]))
-    diagnoses = find_defects(correct, faulty, var, gates)
-
-    output_file = input("\nArquivo de saída: ").strip()
-    with open(output_file, 'w') as f:
-        f.write("Diagnóstico de Defeitos\n")
+# Exportação
+def export_report(expr, vars, original, faulty, diagnoses, output_file):
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.write("Diagnóstico de Circuito\n")
         f.write("="*30 + "\n\n")
-        f.write("Circuito: " + expression + "\n\n")
-        
-        f.write("Tabela:\n")
-        f.write(" | ".join(var + ["Saída"]) + "\n")
-        for line in correct:
-            f.write(" | ".join(str(v) for v in line) + "\n")
-        
+        f.write("Expressão: " + expr + "\n\n")
+
+        f.write("Tabela Correta:\n")
+        f.write(" | ".join(vars + ["Saída"]) + "\n")
+        for row in original:
+            f.write(" | ".join(str(v) for v in row) + "\n")
+
         f.write("\nTabela Defeituosa:\n")
-        f.write(" | ".join(var + ["Saída"]) + "\n")
-        for line in faulty:
-            f.write(" | ".join(str(v) for v in line) + "\n")
-        
-        f.write("\nPossíveis defeitos:\n")
-        if not diagnoses:
-            f.write("Nenhum defeito encontrado\n")
-        else:
+        f.write(" | ".join(vars + ["Saída"]) + "\n")
+        for row in faulty:
+            f.write(" | ".join(str(v) for v in row) + "\n")
+
+        f.write("\nPossíveis Defeitos:\n")
+        if diagnoses:
             for d in diagnoses:
                 f.write(str(d) + "\n")
+        else:
+            f.write("Nenhum defeito encontrado\n")
 
-    print(f"\nDiagnóstico salvo em {output_file}")
+    print(f"\nRelatório salvo em: {output_file}")
 
-if __name__ == "__main__":
+# Execução principal
+def main():
+    expr = read_expression()
+    if expr is None:
+        print("Não foi possível ler a expressão.")
+        return
+
+    vars, original = generate_table(expr)
+    print_table(vars, original, "Tabela Verdade Correta")
+
+    defect_input = input("\nDefeitos simulados (ex: A=1,B=0 ou Enter): ").strip()
+    defects = {}
+
+    if defect_input:
+        try:
+            for item in defect_input.split(","):
+                k, v = item.strip().split("=")
+                defects[k.strip().upper()] = int(v.strip())
+        except:
+            print("Erro no formato dos defeitos.")
+
+    _, faulty = generate_table(expr, defects if defects else None)
+    print_table(vars, faulty, "Tabela Defeituosa")
+
+    diagnoses = find_defects(expr, original, faulty, vars)
+
+    output_file = input("\nNome do arquivo para salvar o relatório (.txt): ").strip()
+    export_report(expr, vars, original, faulty, diagnoses, output_file)
+
+if __name__ == "__main__": 
     main()
